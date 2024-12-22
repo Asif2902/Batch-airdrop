@@ -125,8 +125,9 @@
       }
     ];
 
-    const rpcUrl = "https://mainnet.base.org";
-    const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+    const baseChainId = "0x2105"; // Hexadecimal value for 8453
+    const baseRpcUrl = "https://mainnet.base.org";
+    const provider = new ethers.providers.JsonRpcProvider(baseRpcUrl);
     let signer, userAddress, contract;
 
     async function connectWallet() {
@@ -134,10 +135,47 @@
         const accounts = await ethereum.request({ method: "eth_requestAccounts" });
         signer = new ethers.providers.Web3Provider(window.ethereum).getSigner();
         userAddress = accounts[0];
+        const currentChainId = await ethereum.request({ method: "eth_chainId" });
+
+        if (currentChainId !== baseChainId) {
+          await switchToBaseNetwork();
+        }
+
         contract = new ethers.Contract(contractAddress, abi, signer);
         document.getElementById("connectWallet").innerText = `Connected: ${userAddress.substring(0, 6)}...${userAddress.substring(userAddress.length - 4)}`;
       } else {
         alert("Please install MetaMask!");
+      }
+    }
+
+    async function switchToBaseNetwork() {
+      try {
+        await ethereum.request({
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: baseChainId }]
+        });
+      } catch (switchError) {
+        if (switchError.code === 4902) {
+          // If the chain is not added to MetaMask, prompt to add it
+          await ethereum.request({
+            method: "wallet_addEthereumChain",
+            params: [
+              {
+                chainId: baseChainId,
+                chainName: "Base Mainnet",
+                rpcUrls: [baseRpcUrl],
+                nativeCurrency: {
+                  name: "ETH",
+                  symbol: "ETH",
+                  decimals: 18
+                },
+                blockExplorerUrls: ["https://basescan.org"]
+              }
+            ]
+          });
+        } else {
+          alert("Failed to switch network: " + switchError.message);
+        }
       }
     }
 
@@ -178,7 +216,7 @@
 
         if (amounts.length === 1) {
           const singleAmount = ethers.utils.parseEther(amounts[0].toString());
-          await contract.Airdrop(tokenAddress, receivers, [singleAmount]);
+          await contract.Airdrop(tokenAddress, receivers, Array(receivers.length).fill(singleAmount));
         } else if (receivers.length === amounts.length) {
           const parsedAmounts = amounts.map(amount => ethers.utils.parseEther(amount.toString()));
           await contract.Airdrop(tokenAddress, receivers, parsedAmounts);
