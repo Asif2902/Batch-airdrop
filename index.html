@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Token Batch Transfer</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f0f8ff;
+      color: #333;
+      margin: 0;
+      padding: 0;
+    }
+
+    .container {
+      max-width: 600px;
+      margin: 50px auto;
+      padding: 20px;
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      background: #fff;
+    }
+
+    h1 {
+      text-align: center;
+      color: #0056b3;
+    }
+
+    label {
+      display: block;
+      margin-top: 20px;
+      font-weight: bold;
+      color: #0056b3;
+    }
+
+    input, textarea, button {
+      width: 100%;
+      padding: 10px;
+      margin-top: 5px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      font-size: 16px;
+    }
+
+    textarea {
+      resize: none;
+    }
+
+    button {
+      background-color: #0056b3;
+      color: #fff;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background-color: #004094;
+    }
+
+    .wallet-button {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      padding: 10px 20px;
+      border: none;
+      border-radius: 20px;
+      background: #0056b3;
+      color: #fff;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    .wallet-button:hover {
+      background: #004094;
+    }
+
+    .message {
+      text-align: center;
+      margin-top: 20px;
+      font-size: 14px;
+      color: green;
+    }
+
+    .error {
+      color: red;
+    }
+  </style>
+</head>
+<body>
+  <button class="wallet-button" id="connectWallet">Connect Wallet</button>
+
+  <div class="container">
+    <h1>Token Airdrop</h1>
+
+    <label for="tokenAddress">Token Address</label>
+    <input type="text" id="tokenAddress" placeholder="Enter Token Contract Address">
+
+    <label for="receivers">Receiver Addresses</label>
+    <textarea id="receivers" placeholder="Enter addresses separated by commas or spaces"></textarea>
+
+    <label for="amounts">Token Amounts</label>
+    <textarea id="amounts" placeholder="Enter amounts separated by commas or spaces"></textarea>
+
+    <button id="approve">Approve</button>
+    <button id="airdrop">Airdrop</button>
+
+    <div class="message" id="message"></div>
+  </div>
+
+  <script src="ethers.js"></script>
+  <script>
+    const contractAddress = "0xC1eE65F8aD9d356bBd0A9FEABcc6BAA47D6bc583";
+    const abi = [
+      {
+        "inputs": [
+          { "internalType": "address", "name": "tokenAddress", "type": "address" },
+          { "internalType": "address[]", "name": "receivers", "type": "address[]" },
+          { "internalType": "uint256[]", "name": "amounts", "type": "uint256[]" }
+        ],
+        "name": "Airdrop",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+      }
+    ];
+
+    const rpcUrl = "https://mainnet.base.org";
+    const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+    let signer, userAddress, contract;
+
+    async function connectWallet() {
+      if (window.ethereum) {
+        const accounts = await ethereum.request({ method: "eth_requestAccounts" });
+        signer = new ethers.providers.Web3Provider(window.ethereum).getSigner();
+        userAddress = accounts[0];
+        contract = new ethers.Contract(contractAddress, abi, signer);
+        document.getElementById("connectWallet").innerText = `Connected: ${userAddress.substring(0, 6)}...${userAddress.substring(userAddress.length - 4)}`;
+      } else {
+        alert("Please install MetaMask!");
+      }
+    }
+
+    async function approve() {
+      try {
+        const tokenAddress = document.getElementById("tokenAddress").value;
+        const tokenContract = new ethers.Contract(tokenAddress, [
+          {
+            "constant": false,
+            "inputs": [
+              { "name": "_spender", "type": "address" },
+              { "name": "_value", "type": "uint256" }
+            ],
+            "name": "approve",
+            "outputs": [{ "name": "", "type": "bool" }],
+            "type": "function"
+          }
+        ], signer);
+
+        const tx = await tokenContract.approve(contractAddress, ethers.utils.parseEther("5"));
+        document.getElementById("message").innerText = "Approval Transaction Sent!";
+        await tx.wait();
+        document.getElementById("message").innerText = "Approval Successful!";
+      } catch (err) {
+        document.getElementById("message").innerText = `Error: ${err.message}`;
+        document.getElementById("message").classList.add("error");
+      }
+    }
+
+    async function airdrop() {
+      try {
+        const tokenAddress = document.getElementById("tokenAddress").value;
+        const receiversInput = document.getElementById("receivers").value;
+        const amountsInput = document.getElementById("amounts").value;
+
+        const receivers = receiversInput.split(/[\s,]+/).filter(addr => addr.length > 0);
+        const amounts = amountsInput.split(/[\s,]+/).map(Number);
+
+        if (amounts.length === 1) {
+          const singleAmount = ethers.utils.parseEther(amounts[0].toString());
+          await contract.Airdrop(tokenAddress, receivers, [singleAmount]);
+        } else if (receivers.length === amounts.length) {
+          const parsedAmounts = amounts.map(amount => ethers.utils.parseEther(amount.toString()));
+          await contract.Airdrop(tokenAddress, receivers, parsedAmounts);
+        } else {
+          throw new Error("Receiver and amount counts do not match.");
+        }
+
+        document.getElementById("message").innerText = "Airdrop Successful!";
+      } catch (err) {
+        document.getElementById("message").innerText = `Error: ${err.message}`;
+        document.getElementById("message").classList.add("error");
+      }
+    }
+
+    document.getElementById("connectWallet").addEventListener("click", connectWallet);
+    document.getElementById("approve").addEventListener("click", approve);
+    document.getElementById("airdrop").addEventListener("click", airdrop);
+  </script>
+</body>
+</html>
