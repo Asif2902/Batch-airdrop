@@ -5,9 +5,9 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { validateLogin, sanitizeInput } = require('./middleware/validation');
-const { apiLimiter, authLimiter, csrfProtection } = require('./security/security');
-const { errorMiddleware } = require('./errorHandler');
+const { validateLogin } = require('./middleware/validation');
+const { authLimiter, apiLimiter } = require('./security/security');
+const { errorMiddleware, ApiError } = require('./errorHandler');
 const { createBackup } = require('./backup');
 
 const app = express();
@@ -22,27 +22,24 @@ if (!fs.existsSync(DATA_FILE)) {
 const readData = () => JSON.parse(fs.readFileSync(DATA_FILE));
 const writeData = (data) => fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
 
-function validateTelegramData(initData) {
+const validateTelegramData = (initData) => {
   const botToken = process.env.BOT_TOKEN;
-  const dataCheckString = initData.split('&')
-    .filter(pair => !pair.startsWith('hash='))
-    .sort()
+  const params = new URLSearchParams(initData);
+  const hash = params.get('hash');
+  const dataCheckString = Array.from(params.entries())
+    .filter(([key]) => key !== 'hash')
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}=${value}`)
     .join('\n');
-  
-  const secretKey = crypto.createHash('sha256').update(botToken).digest();
-  const hash = crypto
+
+  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+  const calculatedHash = crypto
     .createHmac('sha256', secretKey)
     .update(dataCheckString)
     .digest('hex');
 
-  return hash === initData.hash;
-}
-
-function calculateInitialPoints(user) {
-  const regDate = new Date(user.registered_at * 1000);
-  const ageDays = Math.floor((new Date() - regDate) / (86400 * 1000));
-  return Math.min(10000, Math.max(1000, ageDays * 100));
-}
+  return calculatedHash === hash;
+};
 
 // Middleware
 app.use(bodyParser.json());
@@ -53,104 +50,82 @@ require('./security/security')(app);
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Content-Security-Policy', "default-src 'self'");
+  res.setHeader('Content-Security-Policy', "default-src 'self' https://telegram.org;");
   next();
 });
 
 // Routes
-app.post('/api/login', 
-  authLimiter,
-  validateLogin,
-  sanitizeInput(['initData']),
-  async (req, res, next) => {
-    try {
-      if (!validateTelegramData(req.body.initData)) {
-        throw new ApiError(401, 'Invalid Telegram data');
-      }
-      
-      const userData = parseInitData(req.body.initData);
-      const data = readData();
-      
-      let user = data.users.find(u => u.id === userData.user.id);
-      const isNewUser = !user;
-      
-      if (isNewUser) {
-        user = {
-          ...userData.user,
-          points: calculateInitialPoints(userData.user),
-          referrals: [],
-          lastLogin: new Date().toISOString(),
-          loginStreak: 1,
-          joinedDate: new Date().toISOString(),
-          wallet: null
-        };
-        data.users.push(user);
-      } else {
-        // Handle returning user login streak
-        const lastLogin = new Date(user.lastLogin);
-        const today = new Date();
-        
-        if (lastLogin.toDateString() !== today.toDateString()) {
-          const dayDiff = Math.floor((today - lastLogin) / (1000 * 60 * 60 * 24));
-          user.loginStreak = dayDiff === 1 ? user.loginStreak + 1 : 1;
-          user.points += user.loginStreak <= 7 ? 100 : 50;
-          user.lastLogin = today.toISOString();
-        }
-      }
-      
-      writeData(data);
-      
-      const token = jwt.sign({
-        id: user.id,
-        username: user.username
-      }, process.env.BOT_TOKEN, {
-        expiresIn: '7d'
-      });
-      
-      res.json({ 
-        token,
-        user: {
-          id: user.id,
-          points: user.points,
-          referralCode: user.referralCode,
-          loginStreak: user.loginStreak
-        }
-      });
-      
-    } catch (err) {
-      next(err);
+app.post('/api/login', authLimiter, validateLogin, async (req, res, next) => {
+  try {
+    if (!validateTelegramData(req.body.initData)) {
+      throw new ApiError(401, 'Invalid Telegram data');
     }
-});
 
-// Other endpoints...
+    const params = new URLSearchParams(req.body.initData);
+    const user = JSON.parse(params.get('user'));
+    const data = readData();
+    
+    let userEntry = data.users.find(u => u.id === user.id);
+    const isNewUser = !userEntry;
+
+    // Calculate points based on account age
+    const registeredAt = new Date(user.registered_at * 1000);
+    const accountAgeDays = Math.floor((Date.now() - registeredAt) / (86400000));
+    const initialPoints = Math.min(10000, Math.max(1000, accountAgeDays * 100));
+
+    if (isNewUser) {
+      userEntry = {
+        ...user,
+        points: initialPoints,
+        referrals: [],
+        lastLogin: new Date().toISOString(),
+        loginStreak: 1,
+        referralCode: crypto.randomBytes(4).toString('hex').toUpperCase(),
+        wallet: null
+      };
+      data.users.push(userEntry);
+    } else {
+      // Handle daily login streak
+      const lastLogin = new Date(userEntry.lastLogin);
+      const today = new Date();
+      const timeDiff = today - lastLogin;
+      const daysDiff = Math.floor(timeDiff / (1000 * 3600 * 24));
+
+      if (daysDiff >= 1) {
+        userEntry.loginStreak = daysDiff === 1 ? userEntry.loginStreak + 1 : 1;
+        userEntry.points += userEntry.loginStreak <= 7 ? 100 : 50;
+        userEntry.lastLogin = today.toISOString();
+      }
+    }
+
+    writeData(data);
+
+    const token = jwt.sign({
+      id: user.id,
+      username: user.username
+    }, process.env.BOT_TOKEN, { expiresIn: '7d' });
+
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        points: userEntry.points,
+        referralCode: userEntry.referralCode,
+        loginStreak: userEntry.loginStreak
+      }
+    });
+
+  } catch (err) {
+    next(err);
+  }
+});
 
 // Error handling
 app.use(errorMiddleware);
 
-// Start server
+// Server start
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   createBackup();
 });
-
-// Helper function to parse Telegram initData
-function parseInitData(initData) {
-  const params = new URLSearchParams(initData);
-  return {
-    user: {
-      id: params.get('user[id]'),
-      first_name: params.get('user[first_name]'),
-      last_name: params.get('user[last_name]'),
-      username: params.get('user[username]'),
-      registered_at: Math.floor(Date.now() / 1000)
-    }
-  };
-}
-
-class ApiError extends Error {
-  constructor(statusCode, message) {
-    super(message);
-    this.statusCode = statusCode;
-  }
-}
